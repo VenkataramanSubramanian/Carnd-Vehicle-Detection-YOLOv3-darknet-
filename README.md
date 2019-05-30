@@ -30,4 +30,4 @@ If you dont have a GPU system or numpy and cuda in specified locations, follow t
   
 ## **EXECUTION OF THE CODE**
 
-**python abstract.py**
+**python abstract.py input_video_file_name output_video_file_name**
