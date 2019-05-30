@@ -1,8 +1,15 @@
 from ctypes import *
 import math
 import random
-import numpy as np
 import cv2
+import time
+from PIL import Image
+from moviepy.editor import VideoFileClip
+import os
+import numpy as np
+
+colour_dct={0:'STOP',1:'GO'}
+color = { 'person':(255,0,0), 'car':(255,255,0), 'bicycle':(0,255,0),'truck':(0,0,255),'bus':(0,255,255),'motorbike':(255,0,0),'traffic light':(128,128,128)}
 
 def sample(probs):
     s = sum(probs)
@@ -45,9 +52,8 @@ class METADATA(Structure):
                 ("names", POINTER(c_char_p))]
 
     
-
-#lib = CDLL("/home/pjreddie/documents/darknet/libdarknet.so", RTLD_GLOBAL)
-lib = CDLL("libdarknet.so", RTLD_GLOBAL)
+path=os.getcwd()
+lib = CDLL(path+"/libdarknet.so", RTLD_GLOBAL)
 lib.network_width.argtypes = [c_void_p]
 lib.network_width.restype = c_int
 lib.network_height.argtypes = [c_void_p]
@@ -105,13 +111,13 @@ load_meta = lib.get_metadata
 lib.get_metadata.argtypes = [c_char_p]
 lib.get_metadata.restype = METADATA
 
-ndarray_image = lib.ndarray_to_image
-ndarray_image.argtypes = [POINTER(c_ubyte), POINTER(c_long), POINTER(c_long)]
-ndarray_image.restype = IMAGE
-
 load_image = lib.load_image_color
 load_image.argtypes = [c_char_p, c_int, c_int]
 load_image.restype = IMAGE
+
+ndarray_image = lib.ndarray_to_image
+ndarray_image.argtypes = [POINTER(c_ubyte), POINTER(c_long), POINTER(c_long)]
+ndarray_image.restype = IMAGE
 
 rgbgr_image = lib.rgbgr_image
 rgbgr_image.argtypes = [IMAGE]
@@ -128,18 +134,62 @@ def classify(net, meta, im):
     res = sorted(res, key=lambda x: -x[1])
     return res
 
-def detect(image, thresh=.5, hier_thresh=.5, nms=.45):
+def traffic_light(traf_img):
+    
+    img_hsv=cv2.cvtColor(traf_img, cv2.COLOR_BGR2HSV)
+  
+    #Finding the low saturation value based on image 
+    sum_saturation = np.sum(img_hsv[:,:,1]) 
+    area = traf_img.shape[0]*traf_img.shape[1]
+    sat_low = int(sum_saturation / area * 1.3)
+      
+    #Getting the red pixels in an image using red mask
+    lower_red = np.array([150,sat_low,140])
+    upper_red = np.array([180,255,255])
+    mask_red = cv2.inRange(img_hsv, lower_red, upper_red)
+    
+    mask_red = mask_red
+    
+    #Getting the yellow pixels in an image using red mask
+    lower_yellow = np.array([10,sat_low,140])
+    upper_yellow = np.array([20,255,255])
+    mask_yel = cv2.inRange(img_hsv, lower_yellow, upper_yellow)
 
+    mask_yellow = mask_yel
+    
+    mask_stop=mask_red+mask_yellow
+
+    output_hsv_stop = img_hsv.copy()
+    output_hsv_stop[np.where(mask_stop==0)] = 0
+    
+
+    #Getting the green pixels in an image using red mask
+    lower_green = np.array([30,sat_low,140])
+    upper_green = np.array([80,255,255])
+    mask_green = cv2.inRange(img_hsv, lower_green, upper_green)
+
+    mask_green = mask_green
+
+    output_hsv_go = img_hsv.copy()
+    output_hsv_go[np.where(mask_green==0)] = 0
+
+    #Getting the output colour of the traffic light
+    value_stop=np.count_nonzero(output_hsv_stop)
+    value_go=np.count_nonzero(output_hsv_go)
+    value=np.argmax([value_stop,value_go])
+
+    return colour_dct[value]
+    
+def detect(image, thresh=.51, hier_thresh=.5, nms=.45):
     data = image.ctypes.data_as(POINTER(c_ubyte))
     im = ndarray_image(data, image.ctypes.shape, image.ctypes.strides)
-   
+    
     num = c_int(0)
     pnum = pointer(num)
     predict_image(net, im)
     dets = get_network_boxes(net, im.w, im.h, thresh, hier_thresh, None, 0, pnum)
     num = pnum[0]
     if (nms): do_nms_obj(dets, num, meta.classes, nms);
-
     res = []
     for j in range(num):
         for i in range(meta.classes):
@@ -148,23 +198,41 @@ def detect(image, thresh=.5, hier_thresh=.5, nms=.45):
                 res.append((meta.names[i], dets[j].prob[i], (b.x, b.y, b.w, b.h)))
     res = sorted(res, key=lambda x: -x[1])
 
+    traffic_img=image.copy()
     for i in res:
         detection=i[0].decode('utf-8')
-        if(detection in ('car')):
+        if(detection in ('person','bicycle','car','truck','bus','motorbike','traffic light')):
+           color_local = color[detection]
            upper = (int(i[2][0]-i[2][2]/2),int(i[2][1]-i[2][3]/2))
            lower = (int(i[2][0]+i[2][2]/2),int(i[2][1]+i[2][3]/2))
-           cv2.rectangle(image, upper, lower , (255,255,0), thickness = 4)
+           cv2.rectangle(image, upper, lower , color_local, thickness = 4)
            cv2.rectangle(image, (int(i[2][0]-i[2][2]/2),int(i[2][1]-i[2][3]/2-20)), 
-                                (int(i[2][0]-i[2][2]/2 + 120),int(i[2][1]-i[2][3]/2)), (255,255,0), thickness = -1)
-           cv2.putText(image, '{0}'.format(detection),(int(i[2][0]-i[2][2]/2), 
-                       int(i[2][1]-i[2][3]/2)  -6),cv2.FONT_HERSHEY_SIMPLEX,0.6, (0, 0, 0),1,cv2.LINE_AA) 
+                                (int(i[2][0]-i[2][2]/2 + 120),int(i[2][1]-i[2][3]/2)), color_local, thickness = -1)
 
+           if(detection=='traffic light'):
+              traf_img=traffic_img[int(i[2][1]-i[2][3]/2):int(i[2][1]+i[2][3]/2), int(i[2][0]-i[2][2]/2):int(i[2][0]+i[2][2]/2)]
+              try:
+                 colour= traffic_light(traf_img)                 
+              except:
+                 continue
+              cv2.putText(image, '{0}'.format(colour),(int(i[2][0]-i[2][2]/2), 
+                       int(i[2][1]-i[2][3]/2)  -6),cv2.FONT_HERSHEY_SIMPLEX,0.6, (0, 0, 0),1,cv2.LINE_AA)
+           else:        
+              cv2.putText(image, '{0}'.format(i[0].decode('utf-8')),(int(i[2][0]-i[2][2]/2), 
+                       int(i[2][1]-i[2][3]/2)  -6),cv2.FONT_HERSHEY_SIMPLEX,0.6, (0, 0, 0),1,cv2.LINE_AA)              
+     
 
-
-    free_image(im)
+    free_image(im) 
     free_detections(dets, num)
     return image
     
-net = load_net(b"cfg/yolov3.cfg", b"yolov3.weights", 0)
+
+	
+net = load_net(b"cfg/yolov3.cfg",b"yolov3.weights", 0)
 meta = load_meta(b"cfg/coco.data")
+
+
+
+    
+    
 
